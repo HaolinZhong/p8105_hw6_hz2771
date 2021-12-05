@@ -10,6 +10,7 @@ output: github_document
 ```{r, message=FALSE}
 library(tidyverse)
 library(modelr)
+library(patchwork)
 ```
 
 
@@ -135,4 +136,98 @@ We found that our own model has the lowest cross-validated RMSE, while the
 simple model has the largest cross-validated RMSE.
 
 
+## Problem 2
+
+### Download data
+
+```{r, message=FALSE}
+weather_df = 
+  rnoaa::meteo_pull_monitors(
+    c("USW00094728"),
+    var = c("PRCP", "TMIN", "TMAX"), 
+    date_min = "2017-01-01",
+    date_max = "2017-12-31") %>%
+  mutate(
+    name = recode(id, USW00094728 = "CentralPark_NY"),
+    tmin = tmin / 10,
+    tmax = tmax / 10) %>%
+  select(name, id, everything())
+```
+
+### bootstrap
+
+
+Here we plot the distribution for $\hat{r}^2$ and $\text{log}(\widehat{\beta}_0 * \widehat{\beta}_1)$.
+
+```{r}
+weather_bs = modelr::bootstrap(weather_df, n = 5000)
+
+r_square_df = 
+  weather_bs %>% 
+  mutate(
+    models = map(strap, ~lm(tmax ~ tmin, data = .x)),
+    results = map(models, broom::glance)
+  ) %>% 
+  select(-strap, -models) %>% 
+  unnest(results) %>% 
+  select(r.squared) 
+  
+beta_df = 
+  weather_bs %>% 
+  mutate(
+    models = map(strap, ~lm(tmax ~ tmin, data = .x)),
+    results = map(models, broom::tidy)
+  ) %>% 
+  select(-models, -strap) %>% 
+  unnest(results) %>% 
+  select(`.id`, term, estimate) %>% 
+  pivot_wider(names_from = term, values_from = estimate) %>% 
+  janitor::clean_names() %>% 
+  mutate(logbeta = log(intercept * tmin)) %>% 
+  select(logbeta)
+
+r_sqr_distribution = 
+  r_square_df %>% 
+  ggplot(aes(x = r.squared)) +
+  geom_density() +
+  labs(
+    title = expression(paste("Distribution of ", hat(r)^2)),
+    x = expression(hat(r)^2)
+  )
+
+logbeta_distribution = 
+  beta_df %>% 
+  ggplot(aes(x = logbeta)) +
+  geom_density() +
+  labs(
+    title = expression(paste("Distribution of ", log(hat(beta[0]) * hat(beta[1])))),
+    x = expression(log(hat(beta[0]) * hat(beta[1])))
+  )
+
+r_sqr_distribution / logbeta_distribution
+```
+
+We can observe that the two distributions are both close to normal distribution, 
+yet the $\hat{r}^2$ distribution is slightly left-skewed and has some outliers.
+
+In addition, we can calculate the 95% CI for the two terms:
+
+```{r}
+r_sqr_ci =
+  r_square_df %>% 
+  summarise(
+    ci_lower = quantile(r.squared, 0.025), 
+    ci_upper = quantile(r.squared, 0.975)
+    )
+
+logbeta_ci = 
+  beta_df %>% 
+  summarise(
+    ci_lower = quantile(logbeta, 0.025), 
+    ci_upper = quantile(logbeta, 0.975)
+    )
+
+bind_rows(r_square = r_sqr_ci, log_b0b1 = logbeta_ci, .id = "term") %>% 
+  knitr::kable(digits = 3)
+```
 
